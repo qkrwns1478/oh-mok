@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>오목 게임</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; }
+        #board { background-color: #e0a96d; border: 2px solid #5c3a21; cursor: pointer; margin-top: 10px;}
+        .info { margin: 10px; font-size: 1.2em; font-weight: bold; }
+        .error { color: red; font-weight: bold; height: 20px;}
+    </style>
+</head>
+<body>
+<h1>오목 게임</h1>
+<div>
+    <button onclick="createGame()">새 방 만들기</button>
+    <input type="text" id="gameIdInput" placeholder="입장할 방 ID 입력">
+    <button onclick="joinGame()">방 입장하기</button>
+</div>
+
+<div class="info" id="status">게임을 시작하거나 방에 입장하세요.</div>
+<div class="error" id="errorMessage"></div>
+
+<canvas id="board" width="570" height="570" onclick="handleBoardClick(event)"></canvas>
+
+<script>
+    const API_BASE = "http://localhost:8080/api/games";
+    const WS_URL = "http://localhost:8080/ws-ohmok";
+
+    let stompClient = null;
+    let currentGameId = null;
+    let isFinished = false;
+
+    const canvas = document.getElementById("board");
+    const ctx = canvas.getContext("2d");
+    drawEmptyBoard();
+
+    /* 방 생성 */
+    async function createGame() {
+        const res = await fetch(API_BASE, { method: "POST" });
+        const data = await res.json();
+        document.getElementById("gameIdInput").value = data.gameId;
+        joinGame();
+    }
+
+    /* 방 입장 & 웹소켓 연결 */
+    function joinGame() {
+        const gameId = document.getElementById("gameIdInput").value;
+        if(!gameId) {
+            alert("방 ID를 입력하세요."); return;
+        }
+        currentGameId = gameId;
+
+        // 웹소켓 연결 시작
+        const socket = new SockJS(WS_URL);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+
+        stompClient.connect({}, function (frame) {
+            document.getElementById("status").innerText = "방 입장 완료! 게임을 시작합니다.";
+            document.getElementById("errorMessage").innerText = "";
+
+            // 다른 사용자가 돌을 두었을 때 상태 업데이트 받기
+            stompClient.subscribe('/topic/game/' + currentGameId, function (message) {
+                const gameState = JSON.parse(message.body);
+                updateBoardAndStatus(gameState);
+            });
+
+            // 금수 에러 등 개인 메시지 받기
+            stompClient.subscribe('/user/topic/errors', function (message) {
+                const errorData = JSON.parse(message.body);
+                document.getElementById("errorMessage").innerText = errorData.error;
+            });
+
+            // 처음 입장 시 현재 게임 상태 불러오기
+            fetch(API_BASE + "/" + currentGameId)
+                .then(res => res.json())
+                .then(data => updateBoardAndStatus(data));
+        });
+    }
+
+    /* 바둑판 클릭 */
+    function handleBoardClick(event) {
+        if (!stompClient || !currentGameId || isFinished) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const y = Math.floor((event.clientX - rect.left) / 30);
+        const x = Math.floor((event.clientY - rect.top) / 30);
+
+        if (x < 0 || x >= 19 || y < 0 || y >= 19) return;
+
+        document.getElementById("errorMessage").innerText = "";
+
+        stompClient.send("/app/game/" + currentGameId + "/move", {}, JSON.stringify({ x: x, y: y }));
+    }
+
+    // 상태 및 UI 업데이트
+    function updateBoardAndStatus(state) {
+        isFinished = state.finished;
+        const statusEl = document.getElementById("status");
+        if (state.finished) {
+            statusEl.innerText = state.winner === 1 ? "흑 승리!" : (state.winner === 2 ? "백 승리!" : "무승부!");
+        } else {
+            statusEl.innerText = `현재 차례: ${state.currentPlayer === 1 ? '흑(1)' : '백(2)'} (총 ${state.moveCount}수)`;
+        }
+        drawBoardState(state.board);
+    }
+
+    // 바둑판 그리기 로직
+    function drawEmptyBoard() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "#5c3a21"; ctx.lineWidth = 1;
+        for (let i = 0; i < 19; i++) {
+            ctx.beginPath(); ctx.moveTo(15, 15 + i * 30); ctx.lineTo(555, 15 + i * 30); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(15 + i * 30, 15); ctx.lineTo(15 + i * 30, 555); ctx.stroke();
+        }
+    }
+    function drawBoardState(board) {
+        drawEmptyBoard();
+        for (let i = 0; i < 19; i++) {
+            for (let j = 0; j < 19; j++) {
+                if (board[i][j] !== 0) {
+                    ctx.beginPath();
+                    ctx.arc(15 + j * 30, 15 + i * 30, 13, 0, 2 * Math.PI);
+                    ctx.fillStyle = board[i][j] === 1 ? "black" : "white";
+                    ctx.fill();
+                    if (board[i][j] === 2) { ctx.strokeStyle = "black"; ctx.stroke(); }
+                }
+            }
+        }
+    }
+</script>
+</body>
+</html>
